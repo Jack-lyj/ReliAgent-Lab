@@ -5,6 +5,7 @@ import datetime
 import fnmatch
 import json
 import logging
+import os
 import signal
 import time
 from datetime import UTC
@@ -30,6 +31,8 @@ from kama_claude.core.bus.commands import (
     SessionCreateResult,
     SessionGetHistoryCommand,
     SessionGetHistoryResult,
+    SessionResumeCommand,
+    SessionResumeResult,
     SessionSendMessageCommand,
     SessionSendMessageResult,
 )
@@ -112,6 +115,17 @@ class CoreApp:
         cmd = SessionCreateCommand.model_validate(params)
         session = await self._sessions.create(mode=cmd.mode, title=cmd.title)
         return SessionCreateResult(session_id=session.id, status=session.status)
+
+    # 恢复 daemon 内存中或重启后从磁盘加载的 chat session
+    async def _session_resume_handler(self, params: dict[str, Any]) -> SessionResumeResult:
+        assert self._sessions is not None
+        cmd = SessionResumeCommand.model_validate(params)
+        session = await self._sessions.resume(cmd.session_id)
+        return SessionResumeResult(
+            session_id=session.id,
+            status=session.status,
+            title=session.title,
+        )
 
     # 向 session 发送一条用户消息并同步等待对应 run 完成
     async def _session_send_handler(self, params: dict[str, Any]) -> SessionSendMessageResult:
@@ -233,7 +247,11 @@ class CoreApp:
         sessions_root = Path("~/.kama/sessions").expanduser()
         store = SessionStore(sessions_root)
         assert self._config is not None
-        compact_provider = AnthropicProvider(self._config.llm.default_model)
+        compact_provider = (
+            AnthropicProvider(self._config.llm.default_model)
+            if os.environ.get("ANTHROPIC_API_KEY")
+            else None
+        )
 
         self._mcp_manager = McpServerManager()
         if self._config.mcp.servers:
@@ -263,6 +281,7 @@ class CoreApp:
         server.register("agent.run", self._agent_run_handler)
         server.register("event.subscribe", self._subscribe_handler)
         server.register("session.create", self._session_create_handler)
+        server.register("session.resume", self._session_resume_handler)
         server.register("session.send_message", self._session_send_handler)
         server.register("session.get_history", self._session_history_handler)
         server.register("session.close", self._session_close_handler)
@@ -275,8 +294,11 @@ class CoreApp:
 
         loop = asyncio.get_running_loop()
         shutdown = asyncio.Event()
-        loop.add_signal_handler(signal.SIGINT, shutdown.set)
-        loop.add_signal_handler(signal.SIGTERM, shutdown.set)
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, shutdown.set)
+            except NotImplementedError:
+                logger.debug("async signal handlers unavailable on this platform")
 
         await shutdown.wait()
 

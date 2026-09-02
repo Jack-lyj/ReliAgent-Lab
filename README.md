@@ -1,5 +1,28 @@
 # KamaClaude
 
+[![CI](https://github.com/Jack-lyj/KamaClaude/actions/workflows/ci.yml/badge.svg)](https://github.com/Jack-lyj/KamaClaude/actions/workflows/ci.yml)
+
+> 本仓库基于开源项目 [youngyangyang04/KamaClaude](https://github.com/youngyangyang04/KamaClaude)
+> 进行学习与二次工程化改进。请保留上游作者和许可证信息，并在简历、面试中明确说明个人贡献边界。
+
+## 本分支的工程化改进
+
+本分支聚焦可测试性、安全性与故障恢复，新增以下能力：
+
+- 事件订阅返回可幂等退订句柄，并按 `run_id` 隔离 run 级事件，避免跨 run 日志串流和订阅泄漏。
+- IPC 广播对慢客户端设置 drain 超时，CLI 只消费自己触发的 `run.finished`。
+- `read_file`、`write_file`、`list_dir` 统一使用真实路径工作区边界，拒绝绝对路径、父级跳转、符号链接和 Windows junction 逃逸。
+- daemon 启动时恢复合法 session 元数据，新增 `session.resume`，TUI 断线重连优先复用原 session。
+- MCP 改用官方 Python SDK，支持标准 `stdio` 与 Streamable HTTP，保留 `isError`、`structuredContent` 和受支持的图片结果。
+- 完善 Windows 测试隔离与跨平台超时用例；测试岗面试材料见
+  [`docs/TEST_ENGINEERING_INTERVIEW_GUIDE.md`](docs/TEST_ENGINEERING_INTERVIEW_GUIDE.md)。
+- 新增 Windows/Linux 双平台 GitHub Actions，自动执行全量测试、覆盖率门禁、Ruff、
+  mypy strict 与协议文档一致性检查。
+- Trace JSONL 明确使用 UTF-8；后台写入失败会立即传播，不再因残留队列导致 `stop()` 死锁。
+
+改进代码应放在个人 fork 的独立分支中，具体流程见
+[`docs/FORK_WORKFLOW.md`](docs/FORK_WORKFLOW.md)。
+
 我最近在公众号「卡码大模型」上，更新了很多关于 Agent、codex、Claude工作原理的文章。
 
 这些文章目前已经沉淀在卡码笔记上：[https://notes.kamacoder.com](https://notes.kamacoder.com)
@@ -339,7 +362,6 @@ Python
 如果是 C++、Java、Go或者其他语言选手，做个项目没问题，这个项目写简历上，面试官也不会问你语言问题，而是聚焦Agent的设计与实现。
 
 我们项目专栏上，简历写法，项目亮点，都不强调编程语言，都聚焦Agent原理。
-
 
 
 

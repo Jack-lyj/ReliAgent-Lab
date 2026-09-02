@@ -104,3 +104,55 @@ async def test_closed_session_rejects_message(tmp_path: Path) -> None:
     with pytest.raises(HandlerError) as exc:
         await manager.send_message(session.id, "again")
     assert exc.value.code == SESSION_CLOSED
+
+
+# 功能：验证 SessionManager 重启时加载磁盘 session，并归一化崩溃遗留的 active 状态
+# 设计：先写入 active chat meta，再新建 manager 模拟 daemon 重启，随后读取历史并检查持久状态
+async def test_manager_restores_persisted_active_chat(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path)
+    session = Session(
+        id="sess-restored",
+        mode="chat",
+        status="active",
+        title="restored",
+        created_at="t1",
+        updated_at="t2",
+    )
+    store.write_meta(session)
+    store.append_message(session.id, "user", "before restart")
+
+    manager = SessionManager(store, lambda: _Runner(), EventBus())  # type: ignore[arg-type]
+
+    assert await manager.get_history(session.id) == [
+        {"role": "user", "content": "before restart"}
+    ]
+    assert store.read_meta(session.id).status == "waiting_for_input"
+
+
+# 功能：验证 resume 重新附着已恢复 session、更新时间并发布 session.resumed
+# 设计：用真实 store 重建 manager，收集 EventBus 事件并断言恢复返回值及事件归属同一 session
+async def test_resume_restored_session_publishes_event(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path)
+    session = Session(
+        id="sess-restored",
+        mode="chat",
+        status="waiting_for_input",
+        title="restored",
+        created_at="t1",
+        updated_at="t2",
+    )
+    store.write_meta(session)
+    events: list[object] = []
+    bus = EventBus()
+
+    async def collect(event: object) -> None:
+        events.append(event)
+
+    bus.subscribe(collect)
+    manager = SessionManager(store, lambda: _Runner(), bus)  # type: ignore[arg-type]
+
+    resumed = await manager.resume(session.id)
+
+    assert resumed.id == session.id
+    assert resumed.updated_at != "t2"
+    assert [event.type for event in events] == ["session.resumed"]  # type: ignore[attr-defined]

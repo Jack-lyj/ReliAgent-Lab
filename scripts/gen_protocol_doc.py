@@ -20,6 +20,8 @@ from kama_claude.core.bus.commands import (
     SessionCreateResult,
     SessionGetHistoryCommand,
     SessionGetHistoryResult,
+    SessionResumeCommand,
+    SessionResumeResult,
     SessionSendMessageCommand,
     SessionSendMessageResult,
 )
@@ -176,6 +178,10 @@ def generate() -> str:
         "\n",
         _model_section("SessionCreateResult", SessionCreateResult, session_create_resp_example),
         "\n",
+        _model_section("SessionResumeCommand", SessionResumeCommand),
+        "\n",
+        _model_section("SessionResumeResult", SessionResumeResult),
+        "\n",
         _model_section("SessionSendMessageCommand", SessionSendMessageCommand, session_send_req_example),
         "\n",
         _model_section("SessionSendMessageResult", SessionSendMessageResult, session_send_resp_example),
@@ -279,13 +285,13 @@ def main() -> None:
         if not output_path.exists():
             print(f"ERROR: {output_path} not found — run: make docs", file=sys.stderr)
             sys.exit(1)
-        if output_path.read_text() != content:
+        if output_path.read_text(encoding="utf-8") != content:
             print(f"ERROR: {output_path} out of sync with code — run: make docs", file=sys.stderr)
             sys.exit(1)
         print(f"OK: {output_path} is up to date.")
     else:
         output_path = Path(args.output)
-        output_path.write_text(content)
+        output_path.write_text(content, encoding="utf-8", newline="\n")
         print(f"Generated {output_path}")
 
 

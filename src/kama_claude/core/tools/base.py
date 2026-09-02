@@ -11,8 +11,10 @@ from pydantic import BaseModel
 class ToolResult:
     content: str
     is_error: bool = False
-    # "runtime_error" | "timeout" | "schema_error" | "permission_denied"
+    # "runtime_error" | "tool_error" | "timeout" | "schema_error" | "permission_denied"
     error_type: str | None = None
+    # 给 LLM 的富内容；为空时使用 content。事件与 TUI 始终只记录文本摘要。
+    llm_content: list[dict[str, object]] | None = None
 
 
 class BaseTool(ABC):

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
 from pydantic import BaseModel
 
+from kama_claude.core.bus.events import RunStartedEvent
 from kama_claude.core.config import KamaConfig
 from kama_claude.core.events.bus import EventBus
 from kama_claude.core.llm.types import LlmResponse, ToolCallBlock
@@ -48,6 +50,30 @@ class _LoopingProvider:
         self._call += 1
         tc = ToolCallBlock(id=f"t{self._call}", name="unknown_tool", input={})
         return LlmResponse(stop_reason="tool_use", tool_calls=[tc])
+
+
+class _ConcurrentProvider:
+    # 初始化双 run 屏障，确保两次 chat 调用真正重叠后再同时完成
+    def __init__(self) -> None:
+        self._calls = 0
+        self._both_started = asyncio.Event()
+
+    # 等待两个 run 都进入 provider 后返回 end_turn，制造可重复的并发事件交错
+    async def chat(
+        self,
+        messages: list[dict[str, object]],
+        tool_schemas: list[dict[str, object]],
+        bus: EventBus,
+        run_id: str,
+        *,
+        step: int = 0,
+        system: str | None = None,
+    ) -> LlmResponse:
+        self._calls += 1
+        if self._calls == 2:
+            self._both_started.set()
+        await asyncio.wait_for(self._both_started.wait(), timeout=2.0)
+        return LlmResponse(stop_reason="end_turn", text=f"done:{run_id}")
 
 
 class _CapturingProvider:
@@ -225,6 +251,59 @@ async def test_injected_bus_receives_events(tmp_path: Path) -> None:
     types = [e.type for e in collected]  # type: ignore[attr-defined]
     assert "run.started" in types
     assert "run.finished" in types
+
+
+# 功能：验证共享 EventBus 上两个并发 run 的 events.jsonl 与 extra handler 都按 run_id 隔离且完成后退订
+# 设计：用屏障 provider 强制 run 重叠，再检查两个真实 JSONL 不串写；结束后发布探针事件确认 writer 和临时 handler 均已解绑
+async def test_concurrent_runs_isolate_event_files_and_cleanup_subscriptions(
+    tmp_path: Path,
+) -> None:
+    shared_bus = EventBus()
+    observed: list[BaseModel] = []
+
+    async def collect(event: BaseModel) -> None:
+        observed.append(event)
+
+    runner = AgentRunner(
+        _config(),
+        bus=shared_bus,
+        provider=_ConcurrentProvider(),
+        extra_handlers=[collect],
+        runs_dir=tmp_path,
+    )
+
+    await asyncio.gather(
+        runner.run_and_capture("goal-a", run_id="run-a"),
+        runner.run_and_capture("goal-b", run_id="run-b"),
+    )
+
+    for run_id in ("run-a", "run-b"):
+        path = tmp_path / run_id / "events.jsonl"
+        events = [json.loads(line) for line in path.read_text().splitlines() if line]
+        assert events
+        assert {event["run_id"] for event in events} == {run_id}
+        assert events[0]["type"] == "run.started"
+        assert events[-1]["type"] == "run.finished"
+
+    started_ids = [
+        event.run_id
+        for event in observed
+        if getattr(event, "type", "") == "run.started"
+    ]
+    assert sorted(started_ids) == ["run-a", "run-b"]
+
+    observed_count = len(observed)
+    line_counts = {
+        run_id: len((tmp_path / run_id / "events.jsonl").read_text().splitlines())
+        for run_id in ("run-a", "run-b")
+    }
+    await shared_bus.publish(
+        RunStartedEvent(run_id="run-a", goal="probe", ts="2026-05-11T00:00:02Z")
+    )
+
+    assert len(observed) == observed_count
+    for run_id, line_count in line_counts.items():
+        assert len((tmp_path / run_id / "events.jsonl").read_text().splitlines()) == line_count
 
 
 # 功能：验证 session run 会从 thread.jsonl 预填 messages，并把 notes 注入 system prompt

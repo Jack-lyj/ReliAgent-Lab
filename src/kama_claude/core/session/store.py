@@ -46,6 +46,39 @@ class SessionStore:
         data = json.loads((self.session_dir(sid) / "meta.json").read_text(encoding="utf-8"))
         return Session.from_dict(data)
 
+    # 扫描 sessions 根目录并返回所有合法 meta，损坏或目录名不匹配的记录会被跳过
+    def list_sessions(self) -> list[Session]:
+        sessions: list[Session] = []
+        for directory in self._root.iterdir():
+            if not directory.is_dir() or not (directory / "meta.json").is_file():
+                continue
+            try:
+                session = self.read_meta(directory.name)
+            except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+                logger.warning("skip broken session metadata path=%s", directory / "meta.json")
+                continue
+            if session.id != directory.name:
+                logger.warning(
+                    "skip session metadata with mismatched id path=%s id=%s",
+                    directory / "meta.json",
+                    session.id,
+                )
+                continue
+            if session.mode not in ("chat", "one_shot") or session.status not in (
+                "active",
+                "waiting_for_input",
+                "closed",
+            ):
+                logger.warning(
+                    "skip session metadata with invalid state path=%s mode=%s status=%s",
+                    directory / "meta.json",
+                    session.mode,
+                    session.status,
+                )
+                continue
+            sessions.append(session)
+        return sorted(sessions, key=lambda item: item.updated_at)
+
     # 追加一条 Anthropic API 消息到 thread.jsonl
     def append_message(
         self,

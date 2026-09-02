@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from kama_claude.core.mcp.client import McpClient, McpServerUnavailableError, McpToolDef, McpToolError
+from kama_claude.core.mcp.client import (
+    McpCallResult,
+    McpClient,
+    McpServerUnavailableError,
+    McpToolDef,
+    McpToolError,
+)
 from kama_claude.core.tools.base import BaseTool, ToolResult
 
 
@@ -24,8 +30,17 @@ class McpTool(BaseTool):
     # 调用 MCP server 上的工具，连接不可用或工具执行失败时返回 is_error=True
     async def invoke(self, params: dict[str, object]) -> ToolResult:
         try:
-            content = await self._client.call_tool(self._tool_def.name, dict(params))
-            return ToolResult(content=content)
+            result = await self._client.call_tool(self._tool_def.name, dict(params))
+            # 兼容只返回文本的测试 double 与旧版第三方 adapter。
+            if isinstance(result, str):
+                return ToolResult(content=result)
+            assert isinstance(result, McpCallResult)
+            return ToolResult(
+                content=result.content,
+                is_error=result.is_error,
+                error_type="tool_error" if result.is_error else None,
+                llm_content=result.llm_content,
+            )
         except McpServerUnavailableError as exc:
             return ToolResult(
                 content=f"mcp server '{self._server_name}' unavailable: {exc}",
@@ -36,7 +51,7 @@ class McpTool(BaseTool):
             return ToolResult(
                 content=f"mcp tool '{self.name}' error: {exc}",
                 is_error=True,
-                error_type="runtime_error",
+                error_type="tool_error",
             )
         except Exception as exc:
             return ToolResult(

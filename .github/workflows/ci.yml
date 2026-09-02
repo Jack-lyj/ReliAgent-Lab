@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - "feature/**"
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Quality gates
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.12.8"
+          enable-cache: true
+
+      - name: Install Python
+        run: uv python install 3.12
+
+      - name: Install project
+        run: uv sync --group dev
+
+      - name: Lint
+        run: uv run ruff check src tests scripts
+
+      - name: Type check
+        run: uv run mypy src
+
+      - name: Verify generated protocol documentation
+        run: uv run python scripts/gen_protocol_doc.py --check
+
+  tests:
+    name: Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.12.8"
+          enable-cache: true
+
+      - name: Install Python
+        run: uv python install 3.12
+
+      - name: Install project
+        run: uv sync --group dev
+
+      - name: Run unit tests
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          uv run pytest tests/unit -vv --timeout=90 --timeout-method=thread 2>&1 |
+            Tee-Object -FilePath windows-unit.log
+          $exitCode = $LASTEXITCODE
+          if ($exitCode -ne 0) {
+            $tail = (Get-Content windows-unit.log -Tail 50) -join " | "
+            if ($tail.Length -gt 6000) {
+              $tail = $tail.Substring($tail.Length - 6000)
+            }
+            Write-Output "::error title=Windows unit test failure::$tail"
+            exit $exitCode
+          }
+
+      - name: Run integration tests
+        if: runner.os == 'Windows'
+        run: uv run pytest tests/integration -vv --timeout=90 --timeout-method=thread
+
+      - name: Run tests with coverage
+        if: runner.os == 'Linux'
+        run: >-
+          uv run pytest tests -q
+          --cov=kama_claude
+          --cov-report=term-missing:skip-covered
+          --cov-fail-under=60

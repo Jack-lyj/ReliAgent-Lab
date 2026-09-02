@@ -32,6 +32,41 @@ def test_meta_roundtrip(tmp_path: Path) -> None:
     assert loaded == session
 
 
+# 功能：验证 list_sessions 扫描合法 meta，并跳过损坏 JSON 与目录名不匹配的记录
+# 设计：在同一存储根构造一条合法和两条非法记录，断言启动恢复不会被局部坏数据阻断
+def test_list_sessions_skips_broken_metadata(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path)
+    valid = Session(
+        id="sess-valid",
+        mode="chat",
+        status="waiting_for_input",
+        title="valid",
+        created_at="t1",
+        updated_at="t2",
+    )
+    store.write_meta(valid)
+    broken = tmp_path / "sess-broken"
+    broken.mkdir()
+    (broken / "meta.json").write_text("{", encoding="utf-8")
+    mismatched = tmp_path / "sess-directory"
+    mismatched.mkdir()
+    (mismatched / "meta.json").write_text(
+        (tmp_path / "sess-valid" / "meta.json").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    invalid_state = tmp_path / "sess-invalid-state"
+    invalid_state.mkdir()
+    invalid_meta = (tmp_path / "sess-valid" / "meta.json").read_text(encoding="utf-8")
+    invalid_meta = invalid_meta.replace('"id": "sess-valid"', '"id": "sess-invalid-state"')
+    invalid_meta = invalid_meta.replace(
+        '"status": "waiting_for_input"',
+        '"status": "unknown"',
+    )
+    (invalid_state / "meta.json").write_text(invalid_meta, encoding="utf-8")
+
+    assert store.list_sessions() == [valid]
+
+
 # 功能：验证含 tool_use/tool_result block 的 thread 消息能按 Anthropic 格式读回
 # 设计：追加 assistant tool_use 和 user tool_result，读取时应剥离 ts/run_id，只保留 API messages 所需字段
 def test_thread_message_roundtrip_with_tool_blocks(tmp_path: Path) -> None:

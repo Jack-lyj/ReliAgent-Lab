@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import asyncio
+
 from pydantic import BaseModel
 
 from kama_claude.core.events.bus import EventBus
 
 
 class _FakeEvent(BaseModel):
+    value: str
+
+
+class _RunEvent(BaseModel):
+    run_id: str
     value: str
 
 
@@ -65,3 +72,66 @@ async def test_subscribers_called_in_order() -> None:
 async def test_no_subscribers_publish_is_noop() -> None:
     bus = EventBus()
     await bus.publish(_FakeEvent(value="x"))  # should not raise
+
+
+# 功能：验证 subscribe 返回的句柄可幂等退订，退订后不再接收事件
+# 设计：连续调用两次 unsubscribe 后再 publish，断言处理器未执行，覆盖重复清理的生命周期边界
+async def test_subscription_handle_unsubscribes_idempotently() -> None:
+    bus = EventBus()
+    received: list[BaseModel] = []
+
+    async def handler(event: BaseModel) -> None:
+        received.append(event)
+
+    subscription = bus.subscribe(handler)
+    subscription.unsubscribe()
+    subscription.unsubscribe()
+
+    await bus.publish(_FakeEvent(value="ignored"))
+
+    assert subscription.active is False
+    assert received == []
+
+
+# 功能：验证带 run_id 的订阅只接收目标 run，不接收其他 run 或无 run_id 事件
+# 设计：依次发布目标、其他和无 scope 三类事件，精确断言仅目标事件进入列表，证明过滤发生在总线边界
+async def test_run_scoped_subscription_filters_other_runs() -> None:
+    bus = EventBus()
+    received: list[BaseModel] = []
+
+    async def handler(event: BaseModel) -> None:
+        received.append(event)
+
+    bus.subscribe(handler, run_id="run-a")
+    target = _RunEvent(run_id="run-a", value="target")
+    await bus.publish(target)
+    await bus.publish(_RunEvent(run_id="run-b", value="other"))
+    await bus.publish(_FakeEvent(value="global"))
+
+    assert received == [target]
+
+
+# 功能：验证慢处理器执行期间退订不会取消在途调用，但会阻止后续事件继续进入
+# 设计：用两个 asyncio.Event 精确控制慢处理器停顿点，避免 sleep 竞态并验证快照遍历下的安全退订语义
+async def test_unsubscribe_while_slow_handler_is_running_stops_future_delivery() -> None:
+    bus = EventBus()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def slow_handler(event: BaseModel) -> None:
+        nonlocal calls
+        calls += 1
+        entered.set()
+        await release.wait()
+
+    subscription = bus.subscribe(slow_handler)
+    publish_task = asyncio.create_task(bus.publish(_FakeEvent(value="first")))
+    await entered.wait()
+
+    subscription.unsubscribe()
+    release.set()
+    await publish_task
+    await bus.publish(_FakeEvent(value="second"))
+
+    assert calls == 1

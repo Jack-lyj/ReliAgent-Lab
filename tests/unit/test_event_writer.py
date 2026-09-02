@@ -58,20 +58,42 @@ async def test_event_writer_appends_multiple_events(tmp_path: Path) -> None:
     assert json.loads(lines[1])["type"] == "run.finished"
 
 
-# 功能：验证 subscribe 把 writer 接入 EventBus 后，bus.publish 能触发文件写入
-# 设计：通过 bus.publish 触发写入（而非直接调 writer.handle），测试集成路径，确认订阅接线正确
+# 功能：验证 subscribe 接入总线且 async context 退出后自动解绑
+# 设计：退出后检查句柄状态并再次 publish，断言文件行数不变，同时覆盖订阅接线和生命周期清理
 async def test_event_writer_subscribe_via_bus(tmp_path: Path) -> None:
     path = tmp_path / "events.jsonl"
     bus = EventBus()
     event = RunStartedEvent(run_id="r1", goal="g", ts="2026-05-11T00:00:00Z")
 
     async with EventWriter(path) as writer:
-        writer.subscribe(bus)
+        subscription = writer.subscribe(bus)
         await bus.publish(event)
+
+    assert subscription.active is False
+    await bus.publish(event)
 
     lines = path.read_text().strip().splitlines()
     assert len(lines) == 1
     assert json.loads(lines[0])["run_id"] == "r1"
+
+
+# 功能：验证带 run scope 的 EventWriter 不会把并发其他 run 的事件写入自己的 JSONL
+# 设计：在同一 EventBus 交错发布 r1/r2 事件，读取真实文件并断言每一行都属于 r1
+async def test_event_writer_run_scope_filters_other_runs(tmp_path: Path) -> None:
+    path = tmp_path / "events.jsonl"
+    bus = EventBus()
+
+    async with EventWriter(path, run_id="r1") as writer:
+        writer.subscribe(bus)
+        await bus.publish(
+            RunStartedEvent(run_id="r2", goal="other", ts="2026-05-11T00:00:00Z")
+        )
+        await bus.publish(
+            RunStartedEvent(run_id="r1", goal="target", ts="2026-05-11T00:00:01Z")
+        )
+
+    events = [json.loads(line) for line in path.read_text().splitlines() if line]
+    assert [event["run_id"] for event in events] == ["r1"]
 
 
 # 功能：验证文件未通过 async with 打开时 handle 静默返回、不抛异常

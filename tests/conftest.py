@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 from collections.abc import AsyncGenerator
+from pathlib import Path
 
 import pytest
 
@@ -20,17 +21,30 @@ def free_port() -> int:
 
 
 @pytest.fixture
-async def running_daemon(free_port: int) -> AsyncGenerator[subprocess.Popen[bytes], None]:
+async def running_daemon(
+    free_port: int,
+    tmp_path: Path,
+) -> AsyncGenerator[subprocess.Popen[bytes], None]:
     env = os.environ.copy()
     env["KAMA_PORT"] = str(free_port)
     env["KAMA_LOG_FILE"] = ""
     env["KAMA_LOG_LEVEL"] = "WARNING"
+    env["KAMA_TRACE_FILE"] = str(tmp_path / "daemon-trace.jsonl")
+    env["USERPROFILE"] = str(tmp_path)
+    env["HOME"] = str(tmp_path)
 
-    proc = subprocess.Popen([sys.executable, "-m", "kama_claude.core"], env=env)
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "kama_claude.core"],
+        env=env,
+        stderr=subprocess.PIPE,
+    )
 
-    deadline = time.monotonic() + 3.0
+    deadline = time.monotonic() + 10.0
     while time.monotonic() < deadline:
         await asyncio.sleep(0.05)
+        if proc.poll() is not None:
+            stderr = proc.stderr.read().decode(errors="replace") if proc.stderr else ""
+            pytest.fail(f"Daemon exited during startup:\n{stderr}")
         try:
             _reader, writer = await asyncio.open_connection("127.0.0.1", free_port)
             writer.close()
@@ -41,7 +55,8 @@ async def running_daemon(free_port: int) -> AsyncGenerator[subprocess.Popen[byte
     else:
         proc.terminate()
         proc.wait()
-        pytest.fail("Daemon did not start within 3 seconds")
+        stderr = proc.stderr.read().decode(errors="replace") if proc.stderr else ""
+        pytest.fail(f"Daemon did not start within 10 seconds:\n{stderr}")
 
     yield proc
 

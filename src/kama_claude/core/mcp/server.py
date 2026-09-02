@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 
 from kama_claude.core.config import McpServerConfig
 from kama_claude.core.mcp.client import McpClient
@@ -51,15 +52,28 @@ class McpServerManager:
                 log.warning("mcp: error closing server '%s'", name)
         self._clients.clear()
 
-    # 根据 transport 类型建立连接
+    # 根据 MCP 标准 transport 类型建立连接
     async def _connect(self, cfg: McpServerConfig) -> McpClient:
         client = McpClient()
         if cfg.transport == "stdio":
             if not cfg.command:
                 raise ValueError(f"mcp server '{cfg.name}': stdio transport requires 'command'")
             await client.connect_stdio(cfg.command, cfg.args, cfg.env or None)
-        elif cfg.transport == "tcp":
-            await client.connect_tcp(cfg.host, cfg.port)
+        elif cfg.transport == "streamable_http":
+            if not cfg.url:
+                raise ValueError(
+                    f"mcp server '{cfg.name}': streamable_http transport requires 'url'"
+                )
+            headers = dict(cfg.headers)
+            for header, env_name in cfg.headers_env.items():
+                value = os.environ.get(env_name)
+                if value is None:
+                    raise ValueError(
+                        f"mcp server '{cfg.name}': environment variable '{env_name}' "
+                        f"required by header '{header}' is not set"
+                    )
+                headers[header] = value
+            await client.connect_streamable_http(cfg.url, headers or None)
         else:
             raise ValueError(f"mcp server '{cfg.name}': unknown transport '{cfg.transport}'")
         return client

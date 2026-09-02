@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -10,7 +11,6 @@ from kama_claude.core.events.bus import EventBus
 from kama_claude.core.llm.base import LLMProvider
 from kama_claude.core.tools.invocation import invoke_tool
 from kama_claude.core.tools.registry import ToolRegistry
-import logging
 
 if TYPE_CHECKING:
     from kama_claude.core.compact.compactor import Compactor
@@ -24,7 +24,7 @@ def _now() -> str:
 
 
 class AgentLoop:
-    # 初始化循环所需依赖：LLM provider、工具注册表、事件总线，以及可选的权限管理器、压缩器和 session ID
+    # 初始化 LLM、工具、事件总线及可选权限、压缩和 session 依赖
     def __init__(
         self,
         provider: LLMProvider,
@@ -96,14 +96,19 @@ class AgentLoop:
                         permission_manager=self._permission_manager,
                         session_id=self._session_id,
                     )
-                    context.add_tool_result(tc.id, result.content, is_error=result.is_error)
+                    context.add_tool_result(
+                        tc.id,
+                        result.llm_content or result.content,
+                        is_error=result.is_error,
+                    )
             elif response.stop_reason == "max_tokens" and response.tool_calls:
                 # Output token limit hit mid-tool-call; input is incomplete.
                 # Add synthetic error results so the conversation stays balanced.
                 for tc in response.tool_calls:
                     context.add_tool_result(
                         tc.id,
-                        "Error: output token limit reached before this tool call could be completed. "
+                        "Error: output token limit reached before this tool call "
+                        "could be completed. "
                         "Please break the task into smaller steps and try again.",
                         is_error=True,
                     )

@@ -50,6 +50,45 @@ format = "text"    # "text" | "json"
 cp .env.example .env
 ```
 
+### MCP server
+
+本项目使用官方 MCP Python SDK，仅支持标准 `stdio` 和 `streamable_http` transport。
+
+本地 stdio server：
+
+```toml
+[[mcp.servers]]
+name = "filesystem"
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
+```
+
+远程 Streamable HTTP server：
+
+```toml
+[[mcp.servers]]
+name = "remote"
+transport = "streamable_http"
+url = "https://example.com/mcp"
+
+[mcp.servers.headers]
+X-Tenant = "demo"
+
+[mcp.servers.headers_env]
+Authorization = "MCP_AUTH_HEADER"
+```
+
+`headers_env` 的值是环境变量名；例如在 `.env` 中设置
+`MCP_AUTH_HEADER="Bearer ..."`，可避免把凭据直接提交进 TOML。旧的 raw TCP 不是 MCP 标准
+transport，配置层会拒绝并提示迁移到 Streamable HTTP。
+
+### Session 恢复
+
+daemon 启动会扫描 `~/.kama/sessions/*/meta.json`。损坏记录会被隔离跳过；异常退出遗留的
+chat `active` 状态会恢复为 `waiting_for_input`。TUI 在同一进程内断线重连时调用
+`session.resume`，只有原 session 不存在或已关闭才创建新会话。
+
 ### 系统环境变量
 
 | 变量 | 默认值 | 说明 |
@@ -70,10 +109,16 @@ uv run ruff check src tests scripts   # lint
 uv run mypy src                       # 类型检查
 uv run pytest tests/ -v               # 全量测试
 uv run pytest tests/unit/ -v         # 仅单元测试（无需启动 daemon）
+uv run pytest tests/ --cov=kama_claude --cov-report=term-missing --cov-fail-under=60
 
 make docs                             # 重新生成 WIRE_PROTOCOL.md
 make verify-s0                        # 完整验证（lint + 类型 + 测试 + 协议同源检查）
 ```
+
+GitHub Actions 会在 Windows 和 Linux 上运行全量测试；Linux job 负责符号链接逃逸用例，
+Windows job 负责 Junction 逃逸用例，并将 unit 与 integration 分步执行、使用
+`pytest-timeout` 输出死锁线程栈；整个 job 最长运行 12 分钟。未配置 `ANTHROPIC_API_KEY`
+时，真实 Claude E2E 会按设计跳过。
 
 ---
 
