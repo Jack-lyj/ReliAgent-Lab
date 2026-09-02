@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Jack-lyj/ReliAgent-Lab/actions/workflows/ci.yml/badge.svg)](https://github.com/Jack-lyj/ReliAgent-Lab/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/Python-3.12-blue)
-![Tests](https://img.shields.io/badge/tests-297%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-306%20passed-brightgreen)
 
 > A reliable, observable and testable local Agent runtime.
 
@@ -113,6 +113,9 @@ uv run kama --help
 
 ## 测试与质量检查
 
+测试分层、风险矩阵、跳过策略和 CI 准入标准见
+[`docs/TEST_STRATEGY.md`](docs/TEST_STRATEGY.md)。
+
 运行单元测试：
 
 ```bash
@@ -134,9 +137,9 @@ uv run mypy src
 
 Windows 本地验证基线：
 
-- 单元测试：287 passed，3 skipped
+- 单元测试：296 passed，3 skipped
 - 集成测试：10 passed，1 skipped
-- 总计：297 passed，4 skipped
+- 总计：306 passed，4 skipped
 
 其中，3 个符号链接用例在 Windows 上由 junction 回归测试替代；真实模型 E2E
 用例在未配置 `ANTHROPIC_API_KEY` 时跳过。Linux 和 Windows 的完整质量检查由

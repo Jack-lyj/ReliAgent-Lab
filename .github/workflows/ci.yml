@@ -77,7 +77,8 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          uv run pytest tests/unit -vv --timeout=90 --timeout-method=thread 2>&1 |
+          uv run pytest tests/unit -vv --timeout=90 --timeout-method=thread `
+            --junitxml=junit-windows-unit.xml 2>&1 |
             Tee-Object -FilePath windows-unit.log
           $exitCode = $LASTEXITCODE
           if ($exitCode -ne 0) {
@@ -91,12 +92,32 @@ jobs:
 
       - name: Run integration tests
         if: runner.os == 'Windows'
-        run: uv run pytest tests/integration -vv --timeout=90 --timeout-method=thread
+        run: >-
+          uv run pytest tests/integration -vv
+          --timeout=90 --timeout-method=thread
+          --junitxml=junit-windows-integration.xml
 
       - name: Run tests with coverage
         if: runner.os == 'Linux'
         run: >-
           uv run pytest tests -q
           --cov=kama_claude
+          --cov-branch
           --cov-report=term-missing:skip-covered
+          --cov-report=xml:coverage.xml
+          --cov-report=html:htmlcov
+          --junitxml=junit-linux.xml
           --cov-fail-under=60
+
+      - name: Upload test evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-evidence-${{ matrix.os }}-${{ github.run_attempt }}
+          path: |
+            junit-*.xml
+            coverage.xml
+            htmlcov/
+            *.log
+          if-no-files-found: warn
+          retention-days: 14
