@@ -20,13 +20,31 @@ class TraceWriter:
 
     # 等待队列清空后取消 drain task
     async def stop(self) -> None:
-        await self._queue.join()
-        if self._task is not None:
-            self._task.cancel()
+        if self._task is None:
+            return
+
+        join_task = asyncio.create_task(self._queue.join())
+        done, _pending = await asyncio.wait(
+            {join_task, self._task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if self._task in done:
+            join_task.cancel()
+            await asyncio.gather(join_task, return_exceptions=True)
+            # 后台写入失败时立即向调用方传播，不能让未完成队列永久阻塞 stop()。
             try:
                 await self._task
-            except asyncio.CancelledError:
-                pass
+            finally:
+                self._task = None
+            return
+
+        self._task.cancel()
+        try:
+            await self._task
+        except asyncio.CancelledError:
+            pass
+        finally:
+            self._task = None
 
     # 非阻塞地将 record 放入写入队列
     def emit(self, record: TraceRecord) -> None:
@@ -34,7 +52,7 @@ class TraceWriter:
 
     # 持续从队列读取 record 并追加写入文件
     async def _drain(self) -> None:
-        with open(self._path, "a") as f:
+        with open(self._path, "a", encoding="utf-8", newline="\n") as f:
             while True:
                 record = await self._queue.get()
                 try:

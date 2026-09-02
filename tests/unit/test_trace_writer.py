@@ -1,3 +1,4 @@
+import asyncio
 import json
 from pathlib import Path
 
@@ -28,7 +29,7 @@ async def test_emit_writes_record_to_file(tmp_path: Path) -> None:
     writer.emit(_record())
     await writer.stop()
 
-    lines = path.read_text().splitlines()
+    lines = path.read_text(encoding="utf-8").splitlines()
     assert len(lines) == 1
     parsed = json.loads(lines[0])
     assert parsed["direction"] == "CORE"
@@ -48,7 +49,7 @@ async def test_emit_multiple_records_in_order(tmp_path: Path) -> None:
     writer.emit(_record("LLM→CORE", "api_response"))
     await writer.stop()
 
-    lines = path.read_text().splitlines()
+    lines = path.read_text(encoding="utf-8").splitlines()
     assert len(lines) == 3
     assert json.loads(lines[0])["direction"] == "CLIENT→CORE"
     assert json.loads(lines[1])["direction"] == "CORE"
@@ -68,7 +69,7 @@ async def test_emit_is_nonblocking(tmp_path: Path) -> None:
         writer.emit(_record())
     await writer.stop()
 
-    assert len(path.read_text().splitlines()) == 10
+    assert len(path.read_text(encoding="utf-8").splitlines()) == 10
 
 
 # 功能：验证 TraceWriter 自动创建不存在的父目录
@@ -82,7 +83,7 @@ async def test_start_creates_parent_dirs(tmp_path: Path) -> None:
     await writer.stop()
 
     assert path.exists()
-    assert len(path.read_text().splitlines()) == 1
+    assert len(path.read_text(encoding="utf-8").splitlines()) == 1
 
 
 # 功能：验证 stop 后再次 start 可以追加写入（文件已存在时）
@@ -101,4 +102,18 @@ async def test_append_mode_on_restart(tmp_path: Path) -> None:
     writer2.emit(_record())
     await writer2.stop()
 
-    assert len(path.read_text().splitlines()) == 2
+    assert len(path.read_text(encoding="utf-8").splitlines()) == 2
+
+
+# 功能：验证后台文件打开失败时 stop 立即传播异常，而不是永久等待未消费队列
+# 设计：将目录作为目标文件制造确定性 I/O 错误，并用 wait_for 约束失败反馈时间
+@pytest.mark.asyncio
+async def test_stop_propagates_background_writer_failure(tmp_path: Path) -> None:
+    path = tmp_path / "trace-dir"
+    path.mkdir()
+    writer = TraceWriter(path)
+    await writer.start()
+    writer.emit(_record())
+
+    with pytest.raises(OSError):
+        await asyncio.wait_for(writer.stop(), timeout=1.0)

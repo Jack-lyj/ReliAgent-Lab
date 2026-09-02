@@ -18,6 +18,7 @@
   [`docs/TEST_ENGINEERING_INTERVIEW_GUIDE.md`](docs/TEST_ENGINEERING_INTERVIEW_GUIDE.md)。
 - 新增 Windows/Linux 双平台 GitHub Actions，自动执行全量测试、覆盖率门禁、Ruff、
   mypy strict 与协议文档一致性检查。
+- Trace JSONL 明确使用 UTF-8；后台写入失败会立即传播，不再因残留队列导致 `stop()` 死锁。
 
 改进代码应放在个人 fork 的独立分支中，具体流程见
 [`docs/FORK_WORKFLOW.md`](docs/FORK_WORKFLOW.md)。
