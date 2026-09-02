@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -29,10 +30,11 @@ async def test_bash_nonzero_exit_is_error() -> None:
 
 
 # 功能：验证命令超时后 is_error=True，error_type 为 "timeout"
-# 设计：timeout=1s 搭配 sleep 2 必然超时；验证 error_type 而非 content，避免超时消息格式耦合
+# 设计：用当前 Python 执行 time.sleep，避免系统 shell 的 sleep 命令存在跨平台差异
 @pytest.mark.asyncio
 async def test_bash_timeout() -> None:
-    result = await BashTool().invoke({"command": "sleep 5", "timeout": 1})
+    command = f'"{sys.executable}" -c "import time; time.sleep(5)"'
+    result = await BashTool().invoke({"command": command, "timeout": 1})
     assert result.is_error
     assert result.error_type == "timeout"
 
@@ -53,8 +55,8 @@ async def test_bash_stderr_merged() -> None:
 @pytest.mark.asyncio
 async def test_write_file_creates_and_returns_size(tmp_path: Path) -> None:
     target = tmp_path / "out.txt"
-    result = await WriteFileTool().invoke(
-        {"path": str(target), "content": "hello world"}
+    result = await WriteFileTool(workspace=tmp_path).invoke(
+        {"path": "out.txt", "content": "hello world"}
     )
     assert not result.is_error
     assert "11" in result.content  # "hello world" = 11 bytes
@@ -66,7 +68,9 @@ async def test_write_file_creates_and_returns_size(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_write_file_creates_parent_dirs(tmp_path: Path) -> None:
     target = tmp_path / "a" / "b" / "file.txt"
-    result = await WriteFileTool().invoke({"path": str(target), "content": "x"})
+    result = await WriteFileTool(workspace=tmp_path).invoke(
+        {"path": "a/b/file.txt", "content": "x"}
+    )
     assert not result.is_error
     assert target.exists()
 
@@ -87,7 +91,7 @@ async def test_write_file_rejects_traversal() -> None:
 async def test_list_dir_shows_files(tmp_path: Path) -> None:
     (tmp_path / "foo.py").write_text("x")
     (tmp_path / "bar.md").write_text("y")
-    result = await ListDirTool().invoke({"path": str(tmp_path)})
+    result = await ListDirTool(workspace=tmp_path).invoke({"path": "."})
     assert not result.is_error
     assert "foo.py" in result.content
     assert "bar.md" in result.content
@@ -103,7 +107,7 @@ async def test_list_dir_respects_max_depth(tmp_path: Path) -> None:
     grandchild.mkdir()
     (grandchild / "deep.txt").write_text("x")
 
-    result = await ListDirTool().invoke({"path": str(tmp_path), "max_depth": 1})
+    result = await ListDirTool(workspace=tmp_path).invoke({"path": ".", "max_depth": 1})
     assert not result.is_error
     assert "child" in result.content
     assert "deep.txt" not in result.content
@@ -112,9 +116,9 @@ async def test_list_dir_respects_max_depth(tmp_path: Path) -> None:
 # 功能：验证对不存在的路径 list_dir 抛出 FileNotFoundError
 # 设计：直接传入不存在的路径字符串，预期抛出标准异常（invocation.py 捕获后返回 error ToolResult）
 @pytest.mark.asyncio
-async def test_list_dir_missing_path_raises() -> None:
+async def test_list_dir_missing_path_raises(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
-        await ListDirTool().invoke({"path": "/this/does/not/exist"})
+        await ListDirTool(workspace=tmp_path).invoke({"path": "missing"})
 
 
 # 功能：验证 list_dir 拒绝包含 .. 的路径
