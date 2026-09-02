@@ -62,6 +62,44 @@ class StdoutPrinter:
             print(f"[run] {event.get('status', '')}  {event.get('steps')} steps  {elapsed:.1f}s")
 
 
+class _RunEventRouter:
+    # 初始化 run 事件路由器；run_id 返回前先暂存事件，避免快速 run 的完成事件丢失
+    def __init__(self, printer: StdoutPrinter) -> None:
+        self._printer = printer
+        self._run_id: str | None = None
+        self._buffered: list[dict[str, Any]] = []
+        self._lock = asyncio.Lock()
+        self.finished = asyncio.Event()
+        self.exit_code = 0
+
+    # 接收全局订阅事件，只向打印器转发当前命令所属 run 的事件
+    async def handle(self, event: dict[str, Any]) -> None:
+        async with self._lock:
+            if self._run_id is None:
+                self._buffered.append(event)
+                return
+            if event.get("run_id") == self._run_id:
+                await self._deliver(event)
+
+    # 绑定 agent.run 返回的 run_id，并按原顺序回放此前暂存的匹配事件
+    async def select_run(self, run_id: str) -> None:
+        async with self._lock:
+            self._run_id = run_id
+            buffered = self._buffered
+            self._buffered = []
+            for event in buffered:
+                if event.get("run_id") == run_id:
+                    await self._deliver(event)
+
+    # 打印已匹配事件，并且只用目标 run.finished 决定命令退出状态
+    async def _deliver(self, event: dict[str, Any]) -> None:
+        await self._printer.handle(event)
+        if event.get("type") == "run.finished":
+            if event.get("status") != "success":
+                self.exit_code = 1
+            self.finished.set()
+
+
 # 异步核心：连接 daemon，订阅事件，触发 run，等待 run.finished
 async def _run_async(goal: str, config: KamaConfig) -> int:
     client = SocketClient(config.host, config.port)
@@ -72,16 +110,10 @@ async def _run_async(goal: str, config: KamaConfig) -> int:
         return 1
 
     printer = StdoutPrinter()
-    finished = asyncio.Event()
-    exit_code = 0
+    router = _RunEventRouter(printer)
 
     async def on_event(event: dict[str, Any]) -> None:
-        nonlocal exit_code
-        await printer.handle(event)
-        if event.get("type") == "run.finished":
-            if event.get("status") != "success":
-                exit_code = 1
-            finished.set()
+        await router.handle(event)
 
     client.on_event(on_event)
     loop_task = asyncio.create_task(client.run_event_loop())
@@ -94,14 +126,18 @@ async def _run_async(goal: str, config: KamaConfig) -> int:
                 "scope": "global",
             },
         )
-        await client.send_command("agent.run", {"goal": goal})
+        result = await client.send_command("agent.run", {"goal": goal})
+        run_id = result.get("run_id")
+        if not isinstance(run_id, str) or not run_id:
+            raise IpcError(-1, "agent.run returned no run_id")
+        await router.select_run(run_id)
     except IpcError as e:
         print(f"error: {e}", file=sys.stderr)
         loop_task.cancel()
         await client.close()
         return 1
 
-    await finished.wait()
+    await router.finished.wait()
 
     loop_task.cancel()
     try:
@@ -110,7 +146,7 @@ async def _run_async(goal: str, config: KamaConfig) -> int:
         pass
 
     await client.close()
-    return exit_code
+    return router.exit_code
 
 
 # 执行 kama run --goal "..." 命令

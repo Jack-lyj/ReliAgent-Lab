@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -167,8 +168,6 @@ class AgentRunner:
         task_manager = TaskManager(run_path / ".tasks")
 
         bus = self._bus if self._bus is not None else EventBus()
-        for h in self._extra_handlers:
-            bus.subscribe(h)
 
         context = ExecutionContext(
             run_id=run_id,
@@ -182,7 +181,14 @@ class AgentRunner:
         )
         prefill_len = len(history)
 
-        async with EventWriter(run_path / "events.jsonl") as writer:
+        async with AsyncExitStack() as stack:
+            for handler in self._extra_handlers:
+                subscription = bus.subscribe(handler, run_id=run_id)
+                stack.callback(subscription.unsubscribe)
+
+            writer = await stack.enter_async_context(
+                EventWriter(run_path / "events.jsonl", run_id=run_id)
+            )
             writer.subscribe(bus)
             await bus.publish(RunStartedEvent(run_id=run_id, goal=goal, ts=_now()))
 

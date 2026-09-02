@@ -14,6 +14,7 @@ from kama_claude.core.trace.record import TraceRecord
 from kama_claude.core.trace.writer import TraceWriter
 
 logger = logging.getLogger(__name__)
+_DEFAULT_DRAIN_TIMEOUT_S = 2.0
 
 
 def _now() -> str:
@@ -29,9 +30,16 @@ class _Subscription:
 
 
 class IpcEventBroadcaster:
-    def __init__(self, trace: TraceWriter | None = None) -> None:
+    # 初始化订阅表，并限制单个慢客户端施加背压的最长时间
+    def __init__(
+        self,
+        trace: TraceWriter | None = None,
+        *,
+        drain_timeout_s: float = _DEFAULT_DRAIN_TIMEOUT_S,
+    ) -> None:
         self._subscriptions: list[_Subscription] = []
         self._trace = trace
+        self._drain_timeout_s = drain_timeout_s
 
     # 注册一个客户端订阅，返回 subscription_id
     def subscribe(
@@ -65,7 +73,10 @@ class IpcEventBroadcaster:
             try:
                 envelope = EventPushEnvelope(event=event_dict)
                 sub.writer.write(envelope.model_dump_json().encode() + b"\n")
-                await sub.writer.drain()
+                await asyncio.wait_for(
+                    sub.writer.drain(),
+                    timeout=self._drain_timeout_s,
+                )
                 if self._trace is not None:
                     client_id = str(sub.writer.get_extra_info("peername", "<unknown>"))
                     self._trace.emit(
@@ -79,8 +90,8 @@ class IpcEventBroadcaster:
                             data={"sub_id": sub.sub_id, "event_type": event_type},
                         )
                     )
-            except (ConnectionResetError, BrokenPipeError, OSError):
-                logger.debug("dead connection for sub %s, scheduling cleanup", sub.sub_id)
+            except (TimeoutError, ConnectionResetError, BrokenPipeError, OSError):
+                logger.debug("slow or dead connection for sub %s, scheduling cleanup", sub.sub_id)
                 dead.append(sub.writer)
 
         for writer in dead:
