@@ -116,7 +116,9 @@ make verify-s0                        # 完整验证（lint + 类型 + 测试 + 
 ```
 
 GitHub Actions 会在 Windows 和 Linux 上运行全量测试；Linux job 负责覆盖普通 Windows
-账户无法创建的符号链接安全用例。未配置 `ANTHROPIC_API_KEY` 时，真实 Claude E2E 会按设计跳过。
+账户无法创建的符号链接安全用例。Windows job 将 unit 与 integration 分步执行，并用
+`pytest-timeout` 输出死锁线程栈；整个 job 最长运行 12 分钟。未配置 `ANTHROPIC_API_KEY`
+时，真实 Claude E2E 会按设计跳过。
 
 ---
 
