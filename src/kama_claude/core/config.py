@@ -51,7 +51,8 @@ class PermissionConfig:
 
 @dataclass
 class CompactionConfig:
-    auto_threshold: float = 0.0    # context_pct 触发自动压缩的阈值（0 表示禁用，推荐用手动 /compact）
+    # context_pct 触发自动压缩的阈值（0 表示禁用，推荐用手动 /compact）
+    auto_threshold: float = 0.0
     tool_result_limit: int = 8_000  # tool_result 截断触发字符数
     tool_result_keep: int = 4_000   # 截断后保留的前缀字符数
 
@@ -59,12 +60,13 @@ class CompactionConfig:
 @dataclass
 class McpServerConfig:
     name: str
-    transport: str = "stdio"       # "stdio" | "tcp"
+    transport: str = "stdio"       # "stdio" | "streamable_http"
     command: str = ""              # stdio 专用：可执行文件路径
     args: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
-    host: str = "localhost"        # tcp 专用
-    port: int = 3000               # tcp 专用
+    url: str = ""                  # streamable_http 专用：MCP endpoint
+    headers: dict[str, str] = field(default_factory=dict)
+    headers_env: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -117,7 +119,10 @@ def get_config() -> KamaConfig:
 
 # 将已解析的 TOML 根表写入 config；未知小节或类型错误时退出进程
 def _apply_toml(config: KamaConfig, data: dict[str, Any]) -> None:
-    unknown = set(data.keys()) - {"core", "logging", "agent", "llm", "trace", "permission", "compaction", "mcp"}
+    known_sections = {
+        "core", "logging", "agent", "llm", "trace", "permission", "compaction", "mcp",
+    }
+    unknown = set(data.keys()) - known_sections
     if unknown:
         raise SystemExit(f"Unknown top-level config keys: {', '.join(sorted(unknown))}")
 
@@ -224,7 +229,8 @@ def _apply_toml(config: KamaConfig, data: dict[str, Any]) -> None:
         comp = data["compaction"]
         if not isinstance(comp, dict):
             raise SystemExit("Config error: [compaction] must be a table")
-        unknown_comp: set[str] = set(comp.keys()) - {"auto_threshold", "tool_result_limit", "tool_result_keep"}
+        known_compaction = {"auto_threshold", "tool_result_limit", "tool_result_keep"}
+        unknown_comp: set[str] = set(comp.keys()) - known_compaction
         if unknown_comp:
             raise SystemExit(f"Unknown [compaction] keys: {', '.join(sorted(unknown_comp))}")
         if "auto_threshold" in comp:
@@ -235,12 +241,16 @@ def _apply_toml(config: KamaConfig, data: dict[str, Any]) -> None:
         if "tool_result_limit" in comp:
             val = comp["tool_result_limit"]
             if not isinstance(val, int) or val <= 0:
-                raise SystemExit("Config error: compaction.tool_result_limit must be a positive integer")
+                raise SystemExit(
+                    "Config error: compaction.tool_result_limit must be a positive integer"
+                )
             config.compaction.tool_result_limit = val
         if "tool_result_keep" in comp:
             val = comp["tool_result_keep"]
             if not isinstance(val, int) or val <= 0:
-                raise SystemExit("Config error: compaction.tool_result_keep must be a positive integer")
+                raise SystemExit(
+                    "Config error: compaction.tool_result_keep must be a positive integer"
+                )
             config.compaction.tool_result_keep = val
 
     if "mcp" in data:
@@ -256,12 +266,28 @@ def _apply_toml(config: KamaConfig, data: dict[str, Any]) -> None:
         for i, srv in enumerate(servers_raw):
             if not isinstance(srv, dict):
                 raise SystemExit(f"Config error: mcp.servers[{i}] must be a table")
+            allowed_server_keys = {
+                "name", "transport", "command", "args", "env", "url", "headers", "headers_env",
+            }
+            unknown_server = set(srv) - allowed_server_keys
+            if unknown_server:
+                raise SystemExit(
+                    f"Unknown mcp.servers[{i}] keys: {', '.join(sorted(unknown_server))}"
+                )
             name = srv.get("name")
             if not isinstance(name, str) or not name:
                 raise SystemExit(f"Config error: mcp.servers[{i}].name must be a non-empty string")
             transport = srv.get("transport", "stdio")
-            if transport not in ("stdio", "tcp"):
-                raise SystemExit(f"Config error: mcp.servers[{i}].transport must be 'stdio' or 'tcp'")
+            if transport == "tcp":
+                raise SystemExit(
+                    f"Config error: mcp.servers[{i}].transport 'tcp' is not an MCP standard "
+                    "transport; migrate the server to 'streamable_http' and configure 'url'"
+                )
+            if transport not in ("stdio", "streamable_http"):
+                raise SystemExit(
+                    f"Config error: mcp.servers[{i}].transport must be 'stdio' "
+                    "or 'streamable_http'"
+                )
             s = McpServerConfig(name=name, transport=transport)
             if "command" in srv:
                 val = srv["command"]
@@ -278,16 +304,25 @@ def _apply_toml(config: KamaConfig, data: dict[str, Any]) -> None:
                 if not isinstance(val, dict):
                     raise SystemExit(f"Config error: mcp.servers[{i}].env must be a table")
                 s.env = {str(k): str(v) for k, v in val.items()}
-            if "host" in srv:
-                val = srv["host"]
+            if "url" in srv:
+                val = srv["url"]
                 if not isinstance(val, str):
-                    raise SystemExit(f"Config error: mcp.servers[{i}].host must be a string")
-                s.host = val
-            if "port" in srv:
-                val = srv["port"]
-                if not isinstance(val, int):
-                    raise SystemExit(f"Config error: mcp.servers[{i}].port must be an integer")
-                s.port = val
+                    raise SystemExit(f"Config error: mcp.servers[{i}].url must be a string")
+                s.url = val
+            for key in ("headers", "headers_env"):
+                if key in srv:
+                    val = srv[key]
+                    if not isinstance(val, dict):
+                        raise SystemExit(f"Config error: mcp.servers[{i}].{key} must be a table")
+                    setattr(s, key, {str(k): str(v) for k, v in val.items()})
+            if transport == "stdio" and not s.command:
+                raise SystemExit(
+                    f"Config error: mcp.servers[{i}].command is required for stdio transport"
+                )
+            if transport == "streamable_http" and not s.url:
+                raise SystemExit(
+                    f"Config error: mcp.servers[{i}].url is required for streamable_http transport"
+                )
             config.mcp.servers.append(s)
 
 
@@ -367,7 +402,8 @@ def _apply_env(config: KamaConfig) -> None:
             compact_threshold_val = float(compact_threshold)
             if not (0.0 <= compact_threshold_val <= 1.0):
                 raise SystemExit(
-                    f"Config error: KAMA_COMPACT_THRESHOLD must be between 0 and 1, got: {compact_threshold!r}"
+                    "Config error: KAMA_COMPACT_THRESHOLD must be between 0 and 1, "
+                    f"got: {compact_threshold!r}"
                 )
             config.compaction.auto_threshold = compact_threshold_val
         except ValueError:
@@ -381,12 +417,14 @@ def _apply_env(config: KamaConfig) -> None:
             compact_tool_limit_val = int(compact_tool_limit)
             if compact_tool_limit_val <= 0:
                 raise SystemExit(
-                    f"Config error: KAMA_COMPACT_TOOL_LIMIT must be a positive integer, got: {compact_tool_limit!r}"
+                    "Config error: KAMA_COMPACT_TOOL_LIMIT must be a positive integer, "
+                    f"got: {compact_tool_limit!r}"
                 )
             config.compaction.tool_result_limit = compact_tool_limit_val
         except ValueError:
             raise SystemExit(
-                f"Config error: KAMA_COMPACT_TOOL_LIMIT must be an integer, got: {compact_tool_limit!r}"
+                "Config error: KAMA_COMPACT_TOOL_LIMIT must be an integer, "
+                f"got: {compact_tool_limit!r}"
             )
 
     compact_tool_keep = os.environ.get("KAMA_COMPACT_TOOL_KEEP")
@@ -395,10 +433,12 @@ def _apply_env(config: KamaConfig) -> None:
             compact_tool_keep_val = int(compact_tool_keep)
             if compact_tool_keep_val <= 0:
                 raise SystemExit(
-                    f"Config error: KAMA_COMPACT_TOOL_KEEP must be a positive integer, got: {compact_tool_keep!r}"
+                    "Config error: KAMA_COMPACT_TOOL_KEEP must be a positive integer, "
+                    f"got: {compact_tool_keep!r}"
                 )
             config.compaction.tool_result_keep = compact_tool_keep_val
         except ValueError:
             raise SystemExit(
-                f"Config error: KAMA_COMPACT_TOOL_KEEP must be an integer, got: {compact_tool_keep!r}"
+                "Config error: KAMA_COMPACT_TOOL_KEEP must be an integer, "
+                f"got: {compact_tool_keep!r}"
             )
