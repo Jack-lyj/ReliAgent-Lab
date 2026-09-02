@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -29,6 +30,8 @@ SESSION_NOT_FOUND = -32010
 SESSION_CLOSED = -32011
 SESSION_BUSY = -32012
 
+logger = logging.getLogger(__name__)
+
 
 # 返回当前 UTC 时间的 ISO 8601 字符串
 def _now() -> str:
@@ -51,6 +54,19 @@ class SessionManager:
         self._sessions: dict[str, Session] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._skill_loader = SkillLoader()
+        self._restore_sessions()
+
+    # 从磁盘重建 session 索引，并将 daemon 异常退出时遗留的 active 状态归一化
+    def _restore_sessions(self) -> None:
+        for session in self._store.list_sessions():
+            if session.status == "active":
+                session.status = "waiting_for_input" if session.mode == "chat" else "closed"
+                session.updated_at = _now()
+                self._store.write_meta(session)
+            self._sessions[session.id] = session
+            self._locks[session.id] = asyncio.Lock()
+        if self._sessions:
+            logger.info("restored %d persisted session(s)", len(self._sessions))
 
     # 创建新 session 并写入 meta.json
     async def create(self, mode: SessionMode, title: str = "") -> Session:
@@ -69,6 +85,19 @@ class SessionManager:
         self._locks[sid] = asyncio.Lock()
         self._store.write_meta(session)
         await self._bus.publish(SessionCreatedEvent(session_id=sid, mode=mode, ts=ts))
+        return session
+
+    # 重新附着到已持久化且未关闭的 chat session，并发布恢复事件
+    async def resume(self, sid: str) -> Session:
+        session = self._get_session(sid)
+        lock = self._locks[sid]
+        if lock.locked():
+            raise HandlerError(SESSION_BUSY, "session busy")
+        if session.status == "closed":
+            raise HandlerError(SESSION_CLOSED, "session already closed")
+        session.updated_at = _now()
+        self._store.write_meta(session)
+        await self._bus.publish(SessionResumedEvent(session_id=sid, ts=session.updated_at))
         return session
 
     # 处理用户消息，追加 thread 并启动一次 agent run

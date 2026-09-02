@@ -20,8 +20,8 @@ async def _send_recv(
     return json.loads(line)
 
 
-# 功能：验证 daemon 暴露 session.create、session.get_history、session.close 三个 S4 IPC 命令
-# 设计：不触发 session.send_message，避免真实 LLM 依赖；只验证 CoreApp handler 注册、协议序列化和 session 状态持久化
+# 功能：验证 daemon 暴露 create、resume、get_history、close 四个 session IPC 命令
+# 设计：不触发真实 LLM，只验证 handler 注册、协议序列化和 session 状态持久化
 async def test_session_create_history_close_over_ipc(
     running_daemon: subprocess.Popen[bytes],
     free_port: int,
@@ -38,6 +38,16 @@ async def test_session_create_history_close_over_ipc(
     assert "result" in created, created
     session_id = created["result"]["session_id"]
     assert created["result"]["status"] == "active"
+
+    resumed = await _send_recv(
+        reader,
+        writer,
+        "session.resume",
+        {"session_id": session_id},
+        req_id="resume",
+    )
+    assert resumed["result"]["session_id"] == session_id
+    assert resumed["result"]["title"] == "ipc test"
 
     history = await _send_recv(
         reader,

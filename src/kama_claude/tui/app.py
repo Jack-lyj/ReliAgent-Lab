@@ -6,8 +6,6 @@ import logging
 import time
 from typing import Any
 
-log = logging.getLogger(__name__)
-
 from rich.markdown import Markdown
 from textual import events
 from textual.app import App, ComposeResult
@@ -19,14 +17,15 @@ from textual.widget import Widget
 from textual.widgets import Label, Static, TextArea
 
 from kama_claude.core.config import KamaConfig
+from kama_claude.core.session.manager import SESSION_CLOSED, SESSION_NOT_FOUND
 from kama_claude.core.skills.loader import SkillLoader
 from kama_claude.core.transport.socket_client import IpcError, SocketClient
+
+log = logging.getLogger(__name__)
 
 
 def _preview(s: str, n: int) -> str:
     return s[:n] + "…" if len(s) > n else s
-
-
 
 
 def _params_str(params: dict[str, Any]) -> str:
@@ -204,7 +203,11 @@ class PermissionSelect(Static):
 
     # 焦点到达时记录，用于确认 focus() 是否真正生效
     def on_focus(self, event: events.Focus) -> None:
-        log.debug("PermissionSelect.on_focus  has_focus=%s  app.focused=%r", self.has_focus, self.app.focused)
+        log.debug(
+            "PermissionSelect.on_focus  has_focus=%s  app.focused=%r",
+            self.has_focus,
+            self.app.focused,
+        )
 
     # 焦点离开时记录，用于追踪是否被其他控件抢走焦点
     def on_blur(self, event: events.Blur) -> None:
@@ -492,12 +495,12 @@ class KamaTuiApp(App[None]):
     """
 
     _BANNER = (
-        "[bold cyan]██╗  ██╗ █████╗ ███╗   ███╗ █████╗  ██████╗██╗      █████╗ ██╗   ██╗██████╗ ███████╗[/bold cyan]\n"
-        "[bold cyan]██║ ██╔╝██╔══██╗████╗ ████║██╔══██╗██╔════╝██║     ██╔══██╗██║   ██║██╔══██╗██╔════╝[/bold cyan]\n"
-        "[bold cyan]█████╔╝ ███████║██╔████╔██║███████║██║     ██║     ███████║██║   ██║██║  ██║█████╗  [/bold cyan]\n"
-        "[bold cyan]██╔═██╗ ██╔══██║██║╚██╔╝██║██╔══██║██║     ██║     ██╔══██║██║   ██║██║  ██║██╔══╝  [/bold cyan]\n"
-        "[bold cyan]██║  ██╗██║  ██║██║ ╚═╝ ██║██║  ██║╚██████╗███████╗██║  ██║╚██████╔╝██████╔╝███████╗[/bold cyan]\n"
-        "[bold cyan]╚═╝  ╚═╝╚═╝  ╚═╝╚═╝     ╚═╝╚═╝  ╚═╝ ╚═════╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚══════╝[/bold cyan]\n"
+        "[bold cyan]██╗  ██╗ █████╗ ███╗   ███╗ █████╗  ██████╗██╗      █████╗ ██╗   ██╗██████╗ ███████╗[/bold cyan]\n"  # noqa: E501
+        "[bold cyan]██║ ██╔╝██╔══██╗████╗ ████║██╔══██╗██╔════╝██║     ██╔══██╗██║   ██║██╔══██╗██╔════╝[/bold cyan]\n"  # noqa: E501
+        "[bold cyan]█████╔╝ ███████║██╔████╔██║███████║██║     ██║     ███████║██║   ██║██║  ██║█████╗  [/bold cyan]\n"  # noqa: E501
+        "[bold cyan]██╔═██╗ ██╔══██║██║╚██╔╝██║██╔══██║██║     ██║     ██╔══██║██║   ██║██║  ██║██╔══╝  [/bold cyan]\n"  # noqa: E501
+        "[bold cyan]██║  ██╗██║  ██║██║ ╚═╝ ██║██║  ██║╚██████╗███████╗██║  ██║╚██████╔╝██████╔╝███████╗[/bold cyan]\n"  # noqa: E501
+        "[bold cyan]╚═╝  ╚═╝╚═╝  ╚═╝╚═╝     ╚═╝╚═╝  ╚═╝ ╚═════╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚══════╝[/bold cyan]\n"  # noqa: E501
         "[dim]  输入消息开始对话  ·  键入 / 触发 skill  ·  Ctrl+C 退出[/dim]"
     )
 
@@ -601,13 +604,8 @@ class KamaTuiApp(App[None]):
         except Exception:
             pass
 
-    # 退出前尽力关闭当前 session，失败也不阻塞 TUI 退出
+    # 退出 TUI；chat session 保留在 daemon 中，便于断线或客户端重启后显式恢复
     async def action_quit(self) -> None:
-        if self._client is not None and self._session_id is not None:
-            try:
-                await self._client.send_command("session.close", {"session_id": self._session_id})
-            except (IpcError, RuntimeError, OSError):
-                self._append(Static("[yellow]warning: failed to close session[/yellow]"))
         self.exit()
 
     # 将输入框提交内容发送给当前 chat session；用 worker 发送，避免 await 阻塞 App 消息泵
@@ -756,6 +754,31 @@ class KamaTuiApp(App[None]):
             f"{session}  [{color}]{state}[/{color}]"
         )
 
+    # 优先恢复断线前的 session；仅在 session 不存在、已关闭或旧 daemon 不支持恢复时新建
+    async def _resume_or_create_session(self, client: SocketClient) -> None:
+        if self._session_id is not None:
+            try:
+                resumed = await client.send_command(
+                    "session.resume",
+                    {"session_id": self._session_id},
+                )
+                self._session_id = str(resumed["session_id"])
+                log.info("session resumed session_id=%s", self._session_id)
+                return
+            except IpcError as exc:
+                if exc.code not in (SESSION_NOT_FOUND, SESSION_CLOSED, -32601):
+                    raise
+                log.info(
+                    "session cannot be resumed session_id=%s code=%s",
+                    self._session_id,
+                    exc.code,
+                )
+                self._session_id = None
+
+        created = await client.send_command("session.create", {"mode": "chat"})
+        self._session_id = str(created["session_id"])
+        log.info("session created session_id=%s", self._session_id)
+
     # 管理 SocketClient 生命周期：连接、订阅事件、断线重连
     async def _socket_loop(self) -> None:
         header = self.query_one("#header", Label)
@@ -806,9 +829,7 @@ class KamaTuiApp(App[None]):
                 if self._replay_run_id is not None:
                     params["replay_from_run"] = self._replay_run_id
                 await client.send_command("event.subscribe", params)
-                created = await client.send_command("session.create", {"mode": "chat"})
-                self._session_id = str(created["session_id"])
-                log.info("session created session_id=%s", self._session_id)
+                await self._resume_or_create_session(client)
                 prompt = self._prompt()
                 if prompt is not None:
                     prompt.disabled = False
@@ -823,7 +844,6 @@ class KamaTuiApp(App[None]):
                 if not loop_task.done():
                     loop_task.cancel()
                 self._client = None
-                self._session_id = None
                 prompt = self._prompt()
                 if prompt is not None:
                     prompt.disabled = True
@@ -845,6 +865,9 @@ class KamaTuiApp(App[None]):
     # 实际的事件路由逻辑
     def _handle_event_inner(self, event: dict[str, Any]) -> None:
         t = event.get("type", "")
+
+        if t.startswith("session.") and event.get("session_id") != self._session_id:
+            return
 
         if t == "llm.token":
             token = event.get("token", "")
@@ -869,6 +892,7 @@ class KamaTuiApp(App[None]):
 
         elif t == "session.closed":
             self._busy = False
+            self._session_id = None
             prompt = self._prompt()
             if prompt is not None:
                 prompt.disabled = True
@@ -1023,10 +1047,13 @@ class KamaTuiApp(App[None]):
             self._append(perm_block)
             select = PermissionSelect(tool_use_id)
             self._mount_permission_select(select)
-            log.debug("PermissionSelect mounted before #prompt  pending=%d", len(self._pending_permission_blocks))
+            log.debug(
+                "PermissionSelect mounted before #prompt  pending=%d",
+                len(self._pending_permission_blocks),
+            )
 
         elif t == "permission.denied":
-            # 处理超时或断连等非用户交互触发的 deny（用户主动 deny 已由 on_permission_select_decided 处理）
+            # 处理超时或断连触发的 deny；用户主动 deny 已由选择控件处理
             tool_use_id = str(event.get("tool_use_id", ""))
             decision = str(event.get("decision", "denied"))
             if tool_use_id in self._pending_permission_blocks:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from rich.markdown import Markdown
 from textual.widget import Widget
 
+from kama_claude.core.transport.socket_client import IpcError
 from kama_claude.tui.app import (
     KamaTuiApp,
     LLMStreamBlock,
@@ -203,3 +204,51 @@ def test_unknown_event_silently_ignored() -> None:
 
     app._handle_event({"type": "some.unknown.type", "run_id": "r", "ts": "t"})
     assert appended == []
+
+
+# 功能：验证 TUI 断线重连时优先调用 session.resume，且不会额外创建新会话
+# 设计：给 app 预置 session_id，用 fake client 记录命令序列，断言恢复成功后 ID 保持不变
+async def test_tui_reconnect_resumes_existing_session() -> None:
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        async def send_command(
+            self, method: str, params: dict[str, object]
+        ) -> dict[str, object]:
+            self.calls.append((method, params))
+            return {"session_id": "sess-existing", "status": "waiting_for_input"}
+
+    app = KamaTuiApp("127.0.0.1", 9999)
+    app._session_id = "sess-existing"
+    client = _FakeClient()
+
+    await app._resume_or_create_session(client)  # type: ignore[arg-type]
+
+    assert app._session_id == "sess-existing"
+    assert [method for method, _ in client.calls] == ["session.resume"]
+
+
+# 功能：验证旧 session 已关闭时 TUI 清理旧 ID 并创建新的 chat session
+# 设计：fake client 首次抛 SESSION_CLOSED，再返回新 ID，覆盖恢复失败后的受控降级路径
+async def test_tui_reconnect_creates_after_closed_session() -> None:
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def send_command(
+            self, method: str, params: dict[str, object]
+        ) -> dict[str, object]:
+            self.calls.append(method)
+            if method == "session.resume":
+                raise IpcError(-32011, "session already closed")
+            return {"session_id": "sess-new", "status": "active"}
+
+    app = KamaTuiApp("127.0.0.1", 9999)
+    app._session_id = "sess-closed"
+    client = _FakeClient()
+
+    await app._resume_or_create_session(client)  # type: ignore[arg-type]
+
+    assert app._session_id == "sess-new"
+    assert client.calls == ["session.resume", "session.create"]

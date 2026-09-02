@@ -50,6 +50,17 @@ class SessionCreateResult(BaseModel):
     status: SessionStatus
 
 
+class SessionResumeCommand(BaseModel):
+    type: Literal["session.resume"] = "session.resume"
+    session_id: str
+
+
+class SessionResumeResult(BaseModel):
+    session_id: str
+    status: SessionStatus
+    title: str = ""
+
+
 class SessionSendMessageCommand(BaseModel):
     type: Literal["session.send_message"] = "session.send_message"
     session_id: str
@@ -106,6 +117,7 @@ Command = Annotated[
     | AgentRunCommand
     | EventSubscribeCommand
     | SessionCreateCommand
+    | SessionResumeCommand
     | SessionSendMessageCommand
     | SessionGetHistoryCommand
     | SessionCloseCommand

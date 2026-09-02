@@ -185,11 +185,11 @@ async def test_text_accumulated_from_tokens() -> None:
     assert result.text == "foobarbaz"
 
 
-# 功能：验证缺少 ANTHROPIC_API_KEY 时 provider 初始化立即 SystemExit 而非等到调用时才报错
-# 设计：用 monkeypatch 清除环境变量后实例化，确认 fail-fast 行为，防止"幽灵 run"（有 started 但无 finished 事件）
-async def test_missing_api_key_raises_system_exit(monkeypatch: pytest.MonkeyPatch) -> None:
+# 功能：验证缺少 ANTHROPIC_API_KEY 时抛普通运行时错误，不会终止整个 daemon
+# 设计：清除环境变量后实例化，断言错误可被 runner 捕获并转换为 run.finished 失败事件
+async def test_missing_api_key_raises_runtime_error(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    with pytest.raises(SystemExit):
+    with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY not set"):
         AnthropicProvider(model="any")
 
 
