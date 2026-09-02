@@ -12,6 +12,27 @@ from pathlib import Path
 import pytest
 
 
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Apply stable test-layer markers from the repository layout.
+
+    Keeping the mapping here makes ``pytest -m unit`` and
+    ``pytest -m integration`` reliable without repeating a marker in every
+    test module. Tests may add narrower markers such as ``e2e`` themselves.
+    """
+    for item in items:
+        path_parts = Path(str(item.path)).parts
+        if "unit" in path_parts:
+            item.add_marker(pytest.mark.unit)
+        elif "integration" in path_parts:
+            item.add_marker(pytest.mark.integration)
+
+        if item.path.name == "test_run_e2e.py":
+            item.add_marker(pytest.mark.e2e)
+
+        if item.path.name == "test_workspace_path_security.py":
+            item.add_marker(pytest.mark.platform)
+
+
 @pytest.fixture
 def free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:

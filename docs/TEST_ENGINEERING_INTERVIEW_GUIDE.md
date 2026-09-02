@@ -17,7 +17,7 @@
 在 Windows + Python 3.12 环境完成以下验证：
 
 ```text
-pytest tests -q                              297 passed, 4 skipped  # Windows 本地
+pytest tests -q                              306 passed, 4 skipped  # Windows 本地
 ruff check src tests scripts                 All checks passed
 mypy src                                     86 source files, no issues
 python scripts/gen_protocol_doc.py --check   WIRE_PROTOCOL.md is up to date
