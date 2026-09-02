@@ -71,7 +71,12 @@ jobs:
       - name: Install project
         run: uv sync --group dev
 
+      - name: Run tests
+        if: runner.os == 'Windows'
+        run: uv run pytest tests -q
+
       - name: Run tests with coverage
+        if: runner.os == 'Linux'
         run: >-
           uv run pytest tests -q
           --cov=kama_claude
