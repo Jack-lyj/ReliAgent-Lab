@@ -23,8 +23,9 @@ mypy src                                     86 source files, no issues
 python scripts/gen_protocol_doc.py --check   WIRE_PROTOCOL.md is up to date
 ```
 
-跳过用例来自当前平台不允许创建的 symlink/junction 或需要真实 Anthropic API 的可选 E2E，不能把
-skip 混同于 pass；在 CI 中应分别配置 Linux/Windows 和带密钥的受控 smoke job。
+跳过用例来自跨平台分工（Linux 验证 symlink、Windows 验证 junction）或需要真实 Anthropic
+API 的可选 E2E，不能把 skip 混同于 pass；CI 会同时运行 Linux/Windows，真实模型 smoke
+则应通过受控密钥单独触发。
 
 ## 个人贡献怎么讲
 

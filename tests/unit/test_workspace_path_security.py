@@ -11,6 +11,11 @@ from kama_claude.core.tools.builtin.list_dir import ListDirTool
 from kama_claude.core.tools.builtin.read_file import ReadFileTool
 from kama_claude.core.tools.builtin.write_file import WriteFileTool
 
+windows_symlink_test = pytest.mark.skipif(
+    os.name == "nt",
+    reason="symlink escape semantics run on Linux; Windows uses the junction regression",
+)
+
 
 # 构造目录符号链接；当前平台或权限不支持时跳过相关安全用例
 def _directory_symlink_or_skip(link: Path, target: Path) -> None:
@@ -89,6 +94,7 @@ async def test_default_workspace_is_captured_when_tool_is_created(
 
 # 功能：验证 read_file 不会通过文件符号链接读取工作区外内容
 # 设计：链接指向同级外部目录的真实文件，断言规范化后的目标触发边界异常
+@windows_symlink_test
 async def test_read_file_rejects_symlink_escape(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     outside = tmp_path / "outside"
@@ -108,6 +114,7 @@ async def test_read_file_rejects_symlink_escape(tmp_path: Path) -> None:
 
 # 功能：验证 write_file 不会通过符号链接父目录在工作区外创建文件
 # 设计：把 workspace 子目录链接到 outside，断言调用失败且目标文件没有副作用
+@windows_symlink_test
 async def test_write_file_rejects_symlinked_parent_escape(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     outside = tmp_path / "outside"
@@ -124,6 +131,7 @@ async def test_write_file_rejects_symlinked_parent_escape(tmp_path: Path) -> Non
 
 # 功能：验证 list_dir 递归时遇到越界目录链接会拒绝而非泄漏目录内容
 # 设计：外部目录放置唯一文件，通过工作区链接列举并断言公共边界异常
+@windows_symlink_test
 async def test_list_dir_does_not_follow_symlink_escape(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     outside = tmp_path / "outside"
